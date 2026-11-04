@@ -194,11 +194,7 @@ fn answer(
         ))
     };
 
-    if !standby.matches(model, system_prompt) {
-        return fresh();
-    }
-
-    let result = match standby.take() {
+    let result = match standby.take(model, system_prompt) {
         Some(process) => process
             .ask(prompt)
             .map(|reply| (reply, Source::Standby))
@@ -210,7 +206,12 @@ fn answer(
             }),
         None => fresh(),
     };
-    standby.refill();
+    match result {
+        Ok(_) => standby.refill_with(model, system_prompt),
+        // A failed request keeps the waiting process's model, so a misspelled
+        // model name can't replace it with a process that won't start.
+        Err(_) => standby.refill(),
+    }
     result
 }
 

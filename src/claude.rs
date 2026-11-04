@@ -146,39 +146,43 @@ fn working_directory() -> &'static Path {
 /// Keeps a `claude` process started ahead of time, so a request doesn't wait
 /// for it to start up.
 ///
-/// The process is ended after `idle_timeout` without a request.
+/// The process uses the model and system prompt of the most recent successful
+/// request. It is ended after `idle_timeout` without a request.
 pub struct Standby {
-    model: String,
-    system_prompt: String,
     idle_timeout: Duration,
     state: Mutex<StandbyState>,
 }
 
 struct StandbyState {
     process: Option<ClaudeProcess>,
+    model: String,
+    system_prompt: String,
     last_used_at: Instant,
 }
 
 impl Standby {
     pub fn new(model: &str, system_prompt: &str, idle_timeout: Duration) -> Arc<Self> {
         Arc::new(Standby {
-            model: model.into(),
-            system_prompt: system_prompt.into(),
             idle_timeout,
             state: Mutex::new(StandbyState {
                 process: None,
+                model: model.into(),
+                system_prompt: system_prompt.into(),
                 last_used_at: Instant::now(),
             }),
         })
     }
 
-    pub fn matches(&self, model: &str, system_prompt: &str) -> bool {
-        model == self.model && system_prompt == self.system_prompt
-    }
-
-    /// Returns the waiting process, or `None` if there isn't a running one.
-    pub fn take(&self) -> Option<ClaudeProcess> {
-        let mut process = self.state.lock().unwrap().process.take()?;
+    /// Returns the waiting process, or `None` if there isn't a running one
+    /// that uses this model and system prompt.
+    pub fn take(&self, model: &str, system_prompt: &str) -> Option<ClaudeProcess> {
+        let mut process = {
+            let mut state = self.state.lock().unwrap();
+            if state.model != model || state.system_prompt != system_prompt {
+                return None;
+            }
+            state.process.take()?
+        };
         if process.is_running() {
             Some(process)
         } else {
@@ -187,13 +191,34 @@ impl Standby {
         }
     }
 
+    /// Makes the waiting process use this model and system prompt, then
+    /// refills. A waiting process that uses others is ended.
+    pub fn refill_with(self: &Arc<Self>, model: &str, system_prompt: &str) {
+        let replaced = {
+            let mut state = self.state.lock().unwrap();
+            if state.model == model && state.system_prompt == system_prompt {
+                None
+            } else {
+                state.model = model.into();
+                state.system_prompt = system_prompt.into();
+                log(&format!(
+                    "standby  now uses model={model} system_chars={}",
+                    system_prompt.chars().count()
+                ));
+                state.process.take()
+            }
+        };
+        drop(replaced);
+        self.refill();
+    }
+
     /// Starts a waiting process if there isn't one, and restarts the idle
     /// countdown.
     pub fn refill(self: &Arc<Self>) {
         {
             let mut state = self.state.lock().unwrap();
             if state.process.is_none() {
-                match ClaudeProcess::start(&self.model, &self.system_prompt) {
+                match ClaudeProcess::start(&state.model, &state.system_prompt) {
                     Ok(process) => state.process = Some(process),
                     Err(error) => log(&format!("could not start standby process: {error}")),
                 }

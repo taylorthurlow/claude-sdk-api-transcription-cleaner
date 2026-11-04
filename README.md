@@ -26,3 +26,7 @@ claude-sdk-api-transcription-cleaner serve   # run in this terminal
 Point your client at `http://127.0.0.1:8765/v1`. The models are `haiku`, `sonnet`, and `opus`.
 
 Set `PORT` to listen on a different port.
+
+The server keeps one `claude` process started and waiting, so a request doesn't have to wait for Claude to start up. The waiting process uses the model and system prompt of the most recent request. Upon receiving a request with a different model for system prompt than the ones associated with the running process, the next waiting process will use that new model and/or system prompt. If no request arrives for `IDLE_TIMEOUT_SECONDS` (10 minutes by default), the server ends the waiting process.
+
+`start` reads `PORT` and `IDLE_TIMEOUT_SECONDS` from your shell, so set them before running it.
